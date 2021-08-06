@@ -1,0 +1,20 @@
+name: pyroSAE
+channels:
+  - conda-forge
+  - defaults
+  - pytorch
+  - nvidia
+dependencies:
+  - python>=3.7
+  - cudatoolkit=11.1
+  - pip
+  - matplotlib
+  - pytorch
+  - torchvision
+  - pyro-ppl
+  - scikit-image
+  - umap-learn
+  - kornia
+  - pip:
+      - torchio[plot]
+      - unet
