@@ -7,7 +7,7 @@ setup(
     name='pyroSAE',
     version='0.1',
     packages=find_packages(),
-    url='https://github.com/milosen/mpmseg',
+    url='https://github.com/milosen/pyroSAE',
     author='Nikola Milosevic',
     author_email='milosevic.nikola@protonmail.com',
     long_description=readme_text,

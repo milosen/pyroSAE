@@ -1,23 +1,22 @@
 # config for the architecture of the whole VAE
 arch:
-    n_img_channels: 2  # 1 or 2
+    n_img_channels: 1  # 1 or 2
     n_tissue_channels: 4
     gumbel_softmax_temp: 0.6667
 
 # training hyper-parameters
 train:
     batch_size: 1
-    n_epochs: 1
+    n_epochs: 10  # just for test
     lr: 0.0001
     beta: 1
 
 eval:
-    val_freq: 25  # validation frequency in epochs
-    save_freq: 500
+    save_freq: 1  # just for test: consider changing the save frequency
 
 # hyper-parameters for patch based training
 patches:
-    queue_length: 300
-    patches_per_volume: 10
+    queue_length: 8
+    patches_per_volume: 1
     patch_size: [96, 96, 96]
     overlap: 8

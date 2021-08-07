@@ -7,11 +7,9 @@ import yaml
 
 
 if __name__ == '__main__':
-    slicer = Slicer(dimension=2, dim_slice=100)
-
     config = yaml.safe_load(open("config.yml"))
 
-    train_dataset, atlas_dataset = get_datasets()
+    train_dataset, val_dataset, atlas_dataset = get_datasets()
 
     train_queue_dataset = tio.Queue(
         train_dataset,
@@ -32,6 +30,10 @@ if __name__ == '__main__':
 
     sae = SAE(atlas_dataset['tissues'][tio.DATA].permute(0, 2, 3, 1), config, "cuda")
 
-    val_sampler = tio.data.GridSampler(train_dataset[0], config['patches']['patch_size'], patch_overlap=config['patches']['overlap'])
+    val_sampler = tio.data.GridSampler(val_dataset[0], config['patches']['patch_size'],
+                                       patch_overlap=config['patches']['overlap'])
+    # noinspection PyTypeChecker
     val_loader = torch.utils.data.DataLoader(val_sampler, batch_size=1)
-    sae.train_epochs(train_loader=train_loader, val_loader=val_loader)
+    val_aggregator = tio.data.GridAggregator(val_sampler, overlap_mode='average')
+
+    sae.train_epochs(train_loader=train_loader, val_loader=val_loader, val_aggr=val_aggregator)

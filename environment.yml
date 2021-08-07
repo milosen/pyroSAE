@@ -6,11 +6,11 @@ channels:
   - nvidia
 dependencies:
   - python>=3.7
-  - cudatoolkit=11.1
+  - cudatoolkit=11.0.3
+  - pytorch=1.7.1
+  - torchvision
   - pip
   - matplotlib
-  - pytorch
-  - torchvision
   - pyro-ppl
   - scikit-image
   - umap-learn

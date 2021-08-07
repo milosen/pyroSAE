@@ -2,8 +2,11 @@ import matplotlib.pyplot as plt
 import torchio as tio
 import torch
 from torch.nn.functional import pad, conv3d
+import torch.nn.functional as F
 from itertools import product
 from kornia import one_hot
+import numpy as np
+from tqdm import tqdm
 
 
 class Slicer:
@@ -11,53 +14,69 @@ class Slicer:
         self.dimension = torch.tensor(dimension)
         self.dim_slice = torch.tensor(dim_slice)
 
-    def show(self, im: torch.Tensor):
-        s = torch.index_select(im.cpu(), dim=self.dimension, index=self.dim_slice)
-        plt.imshow(s.numpy(), cmap='gray')
-        plt.axis('off')
-        plt.show()
+    def show(self, im: torch.Tensor, ax=None):
+        # noinspection PyTypeChecker
+        s = torch.index_select(im.cpu(), dim=self.dimension, index=self.dim_slice).squeeze()
+        if ax:
+            ax.imshow(np.rot90(s.numpy()), cmap='gray')
+            ax.axis('off')
+        else:
+            plt.imshow(np.rot90(s.numpy()), cmap='gray')
+            plt.axis('off')
+            plt.show()
 
 
 def get_datasets():
     atlas = tio.datasets.ICBM2009CNonlinearSymmetric(load_4d_tissues=True)
+    tissues_tensor = atlas['tissues'][tio.DATA].permute(1, 2, 3, 0)
+    atlas['tissues'][tio.DATA] = torch.cat([1 - tissues_tensor.sum(dim=0, keepdim=True), tissues_tensor], dim=0)
 
-    transforms = [
+    transforms = tio.Compose([
         tio.ToCanonical(),
         tio.Resample(atlas.t1.path),
         tio.RescaleIntensity(out_min_max=(0, 1), percentiles=(1, 99)),
         tio.ZNormalization(masking_method=tio.ZNormalization.mean)
-    ]
+    ])
 
     ixi_dataset = tio.datasets.ixi.IXITiny(
         'data',
-        transform=tio.Compose(transforms),
+        transform=transforms,
         download=True
     )
 
-    tissues_tensor = atlas['tissues'][tio.DATA].permute(2, 1, 3, 0)
-    atlas['tissues'][tio.DATA] = torch.cat([1 - tissues_tensor.sum(dim=1, keepdim=True), tissues_tensor], dim=1)
+    print("Prepare Subjects")
+    all_subjects = ixi_dataset.dry_iter()
+    for subject in all_subjects:
+        # this makes sure that the patch locations are always the same for
+        # input images and atlas (there is probably a better way to do it but idk)
+        subject.add_image(atlas['tissues'], 'atlas')
 
-    return ixi_dataset, atlas
+    training_dataset = tio.SubjectsDataset(all_subjects[:8], transform=transforms)
+    val_dataset = tio.SubjectsDataset(all_subjects[8:10], transform=transforms)
+
+    return training_dataset, val_dataset, atlas
 
 
-def co_occ(t: torch.tensor) -> torch.tensor:
-    d = t.shape[0]
-    h = t.shape[1]
-    w = t.shape[2]
-    n_classes = t.shape[3]
+def co_occ(atlas: torch.tensor, device) -> torch.tensor:
+    r"""Calculate log co-occurrence matrix for the Markov random field prior.
+    """
+    d = atlas.shape[0]
+    h = atlas.shape[1]
+    w = atlas.shape[2]
+    n_classes = atlas.shape[3]
 
-    max_idx = torch.argmax(t, 3, keepdim=True).cuda()
-    t = torch.zeros_like(t).cuda()
+    max_idx = torch.argmax(atlas, 3, keepdim=True).to(device)
+    t = torch.zeros_like(atlas).cuda()
 
-    potentials = t.new_zeros([n_classes, n_classes]).cuda()
+    potentials = t.new_zeros([n_classes, n_classes]).to(device)
 
-    l1_l2_counts = t.new_zeros([1, n_classes, n_classes, d, h, w]).cuda()
+    l1_l2_counts = t.new_zeros([1, n_classes, n_classes, d, h, w]).to(device)
 
     nh = torch.tensor([
         [[0, 0, 0], [0, 1, 0], [0, 0, 0]],
         [[0, 1, 0], [1, 0, 1], [0, 1, 0]],
         [[0, 0, 0], [0, 1, 0], [0, 0, 0]],
-    ]).cuda().float()
+    ]).to(device).float()
 
     nh = nh.view(1, 1, 3, 3, 3)
 
@@ -65,8 +84,6 @@ def co_occ(t: torch.tensor) -> torch.tensor:
 
     t = t.permute(3, 0, 1, 2).unsqueeze(0)
     tp = pad(t, (1, 1, 1, 1, 1, 1))
-
-    _, axs = plt.subplots(nrows=n_classes, ncols=n_classes)
 
     for l1, l2 in product(range(n_classes), range(n_classes)):
 
@@ -80,7 +97,6 @@ def co_occ(t: torch.tensor) -> torch.tensor:
         l2_total = t.index_select(dim=1, index=l2).sum(dim=(-1, -2, -3))
 
         l1_l2_counts[:, l1.item(), l2.item(), :, :, :] = (l2_bin_map*nh_counts).squeeze(dim=1)
-        axs[l1, l2].imshow(l1_l2_counts[0, l1.item(), l2.item(), 200].cpu())
 
         # divide by 6 to counter the 6 fold counting
         potentials[l1, l2] = torch.where(
@@ -89,23 +105,10 @@ def co_occ(t: torch.tensor) -> torch.tensor:
             t.new_zeros([1])
         )
 
-    plt.show()
-
-    print(l1_l2_counts.shape)
-
-    table_rows = potentials.sum(dim=0, keepdim=True)
-    print(table_rows, table_rows.shape)
-
-    table_cols = potentials.sum(dim=1, keepdim=True)
-    print(table_cols, table_cols.shape)
-
     potentials[potentials == 0] = 1e-12
     log_rel_cooc = torch.log(potentials)
 
-    plt.imshow(log_rel_cooc.cpu())
-    plt.show()
-
-    return log_rel_cooc.cpu()
+    return log_rel_cooc
 
 
 def dice(input: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -145,3 +148,34 @@ def dice(input: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.
 
 def onehot(tensor: torch.Tensor, num_classes=4):
     return F.one_hot(tensor.squeeze(1).long(), num_classes=num_classes).permute(0, 4, 1, 2, 3)
+
+
+def stack_batch(batch, label):
+    return torch.stack([patch[label][tio.DATA] for patch in batch], dim=0)
+
+
+def prepare_batch(atlas, batch, device, patch_size, get_labels=False):
+    x = stack_batch(batch, 'image').to(device)
+
+    if get_labels:
+        y = stack_batch(batch, 'label').to(device)
+    else:
+        y = torch.empty((0,))
+
+    a = stack_batch(batch, 'atlas').to(device)
+
+    return x, y, a
+
+
+def to_torch(tensor):
+    return tensor.permute(0, 4, 1, 2, 3)
+
+
+def to_pyro(tensor):
+    return tensor.permute(0, 2, 3, 4, 1)
+
+
+def ensure_checkpoints_dir_exists():
+    import os
+    if not os.path.exists("checkpoints"):
+        os.mkdir("checkpoints")
